@@ -38,37 +38,30 @@ def apply_horizontal_shift(rgb_img, shift_map):
     shifted_rgb = rgb_img[indices_y, x_map]
     return shifted_rgb
 
-def create_spatial_video_frames(input_folder, max_pixel_shift):
+def save_video_directly(input_folder, output_path, fps, max_pixel_shift):
     input_folder = Path(input_folder)
     rgb_files = sorted(glob.glob(str(input_folder / "*_rgb_*.png")))
     depth_files = sorted(glob.glob(str(input_folder / "*_depth_*.png")))
 
     assert len(rgb_files) == len(depth_files), "RGB画像とDepth画像の数が一致しません。"
 
-    frames = []
+    # 最初の画像でサイズ取得
+    sample = np.array(Image.open(rgb_files[0]))
+    h, w, _ = sample.shape
+    out = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*'mp4v'), fps, (w * 2, h))
 
-    for rgb_path, depth_path in tqdm(zip(rgb_files, depth_files), total=len(rgb_files), desc="Creating stereo frames"):
+    for rgb_path, depth_path in tqdm(zip(rgb_files, depth_files), total=len(rgb_files), desc="Saving stereo video"):
         rgb_img = np.array(Image.open(rgb_path))
         depth_img = np.array(Image.open(depth_path)).astype(np.float32) / 255.0
 
-        h, w = depth_img.shape
+        # 近いものが黒 → 白が遠い → 白の方が大きいピクセルシフト
         shift_map = (depth_img * max_pixel_shift).astype(np.int32)
-
-        # ベクトル化された高速処理
         right_eye = apply_horizontal_shift(rgb_img, shift_map)
         left_eye = rgb_img
-
         stereo_img = np.concatenate((left_eye, right_eye), axis=1)
-        frames.append(stereo_img)
 
-    return frames
+        out.write(cv2.cvtColor(stereo_img, cv2.COLOR_RGB2BGR))
 
-def save_video(frames, output_path, fps):
-    h, w, _ = frames[0].shape
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
-    for frame in tqdm(frames, desc="Saving video"):
-        out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     out.release()
 
 def mux_audio_with_video(video_path, audio_path, final_output_path):
@@ -82,31 +75,27 @@ def create_spatial_video_with_audio(input_folder, source_video, max_pixel_shift)
     fps, audio_path = extract_fps_and_audio(source_video)
     print(f"FPS: {fps}, 音声ファイル: {audio_path}")
 
-    # 出力ファイル名に max_pixel_shift を付加
     input_folder = Path(input_folder)
     base_name = input_folder.name
     output_video_path = f"{base_name}_spatial_shift{max_pixel_shift}.mp4"
-
-    print("空間ビデオフレームを生成中...")
-    frames = create_spatial_video_frames(input_folder, max_pixel_shift)
-
     temp_video_path = "temp_video.mp4"
-    print("動画を保存中（音声なし）...")
-    save_video(frames, temp_video_path, fps)
+
+    print("空間ビデオを生成して保存中（メモリ効率化）...")
+    save_video_directly(input_folder, temp_video_path, fps, max_pixel_shift)
 
     print("音声を合成中...")
     mux_audio_with_video(temp_video_path, audio_path, output_video_path)
 
-    print(f"🎬 空間ビデオ（音声付き）を保存しました: {output_video_path}")
+    print(f"🎬 完成：{output_video_path}")
 
-    #クリーンアップ
+    # 一時ファイルを削除
     Path(temp_video_path).unlink(missing_ok=True)
     Path(audio_path).unlink(missing_ok=True)
 
 # 実行例
 if __name__ == "__main__":
     create_spatial_video_with_audio(
-        input_folder="./output/night", # 前処理した動画のファイル名
-        source_video="night.mp4", # 元の動画
-        max_pixel_shift=20 # 視差の最大シフト量
+        input_folder="./output/night",    # 前処理した画像フォルダ
+        source_video="night.mp4",         # 元の動画（音声・fps抽出に使用）
+        max_pixel_shift=30                # ピクセルシフト量（視差）
     )
